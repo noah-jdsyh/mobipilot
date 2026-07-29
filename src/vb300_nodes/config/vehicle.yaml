@@ -1,0 +1,85 @@
+# VB300 车辆与传感器参数 (ROS2 标准参数文件, 按节点名分节)
+
+# ---- CAN 收发桥 ----
+can_bridge:
+  ros__parameters:
+    can_interface: can0
+    bitrate: 500000             # 厂家确认 (实际由 launch 中 ip link 设置)
+    steer_ratio: 24.375         # 方向盘780°→前轮32°, 厂家确认 (取绝对值)
+    steer_offset: 0.0           # [rad], 补偿转向机械中位偏移
+    steer_invert: 1.0           # 1.0 正常, -1.0 翻转左右方向
+    steer_cmd_msb: true         # true=转向命令按大端发送; 本底盘实测为大端
+    debug_can: false
+
+# ---- INS 组合导航驱动 ----
+ins_node:
+  ros__parameters:
+    port_data: /dev/ins_data    # udev别名 → RS232-1 数据口(二进制帧输出)
+    port_diff: /dev/ins_cmd     # udev别名 → RS232-2 指令口 @115200 (AT指令/NMEA/差分)
+    baud: 460800                # RS232-1 出厂波特率 (更改需导远上位机, 手册§2.3)
+    output_hz: 100              # BDDB0B输出频率 (实测下发200Hz会使设备输出异常, 勿改)
+    utm_zone: 50                # UTM分带: 北京116.7°E → 50带 (114-120°E)
+    northern: true
+
+# ---- INS 定位转换 (pbox_node 下游, 发 /ins/nav + /ins/odom) ----
+ins_nav_node:
+  ros__parameters:
+    utm_zone: 50                # UTM分带: 北京116.7°E → 50带
+    northern: true
+    origin_lat: 39.51987080     # 录制路点时的原点 (waypoints_recorded.yaml, 2026-07-26 第三条路线)
+    origin_lon: 116.71629860    # 固定后每次启动坐标系一致, 路点不漂移
+    origin_alt: 3.17
+    ins_topic: /Ins
+
+# ---- 双雷达栅格感知 ----
+grid_perception:
+  ros__parameters:
+    grid_size: 50.0             # 栅格范围 [m]
+    resolution: 0.1             # 栅格分辨率 [m]
+    ground_z_min: -0.2          # 地面滤除下限 (相对 base_link)
+    ground_z_max: 0.2           # 地面滤除上限
+    occ_threshold: 2            # 占用栅格阈值 (3→2: 远处行人腿点稀疏, 保证1.5m+可检 2026-07-26)
+    # 车身自遮挡过滤盒 (base_link): 盒内点不视为障碍 (实测车身右侧护栏 y=-0.5 会误触发停障)
+    body_x_min: -0.35           # 车尾后 0.35 (后悬0.22+余量)
+    body_x_max: 1.75            # 车头前 0.2 (前悬1.538+雷达支架+余量)
+    body_y_abs: 0.8            # 半宽 0.45 + 雷达支架 0.625 + 余量
+    # 雷达外参 (livox→base_link): base_link=后轴中心地面投影, 车头 +x, 左 +y, 上 +z
+    # 安装方式 (2026-07 实测): 左右对称倒置(球罩朝地), M12 出线垂直指向车体中轴线
+    #   雷达系约定 (手册坐标定义顶视图): M12 出线方向 = -X, Z 出球罩, 右手系
+    #   位置: 前轴前 0.28m (轴距1.25m → x=1.53), 距中轴 ±0.625, 视窗球心离地 0.445
+    #   姿态: 倒置 roll=π; 出线=-X, +X 朝外 (近场车身侧面17.5cm证据+装车确认); 左雷达 Y 朝车头 yaw=+π/2; 右雷达 Y 朝车尾 yaw=-π/2
+    #   左右归属已由装车确认: 192.168.1.33=左, 192.168.1.34=右
+    lidar_33_x: 1.53            # 左雷达
+    lidar_33_y: 0.625
+    lidar_33_z: 0.445
+    lidar_33_roll: 3.1416
+    lidar_33_pitch: 0.0
+    lidar_33_yaw: 1.5708
+    lidar_34_x: 1.53            # 右雷达
+    lidar_34_y: -0.625
+    lidar_34_z: 0.445
+    lidar_34_roll: 3.1416
+    lidar_34_pitch: 0.0
+    lidar_34_yaw: -1.5708
+
+# ---- 路点规划 + 停障 ----
+planner_node:
+  ros__parameters:
+    waypoints_file: /home/cabr/vb300_ws/src/vb300_nodes/config/waypoints_recorded.yaml
+    arrive_radius: 0.5          # 路点到达阈值 [m]
+    stop_lookahead: 3.0         # 停障前瞻距离 [m]
+    stop_width: 1.2             # 检测宽度 [m] (±0.6, 避开 ±0.7-0.8 的左侧支架结构)
+
+# ---- 纯跟踪控制 ----
+control_node:
+  ros__parameters:
+    wheelbase: 1.25             # 轴距 [m]
+    # 最大前轮转角 [rad]: 机械/协议极限为方向盘±780°÷24.375=32°(0.5585rad)
+    # 取 0.55(31.5°, R≈2.05m) 接近用满, 对应最小转弯半径约2m (2026-07-26 实测路线需要)
+    max_steer_angle: 0.55
+    max_speed: 1.39             # 最高车速 m/s (5km/h)
+    min_lookahead: 1.0          # 最小前视距离 [m] (1.5→1.0: 弯道贴合更紧, 防切弯 2026-07-26)
+    lookahead_gain: 0.5         # 速度增益系数
+    kp_speed: 10.0
+    ki_speed: 2.0
+    kd_speed: 0.0

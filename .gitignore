@@ -1,0 +1,9 @@
+build/
+install/
+log/
+__pycache__/
+*.pyc
+*.log
+src/seyond_sw_ros/build/
+src/seyond_sw_ros/install/
+src/seyond_sw_ros/log/

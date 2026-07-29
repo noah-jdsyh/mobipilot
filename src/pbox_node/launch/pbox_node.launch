@@ -1,0 +1,40 @@
+<launch>
+
+  <node pkg="pbox_node" type="pbox_pub" name="pbox_pub" required="true" output="screen">
+   
+    <!-- 输出msg类型: ros2标准msg: 0 , Asensing msg: 1 -->
+    <param name="MsgType" type ="int" value="1" />    
+
+    <!-- 连接类型：serial port：0 , UDP：1 -->
+    <param name="ConnectionType" type ="int" value="1" />
+
+    <!-- 串口设备串  defaule: /dev/ttyUSB0 -->
+    <param name="UART_Port" type ="string" value="/dev/ttyUSB0" />
+    <!-- 串口波特率  default: 115200 -->
+    <param name="UART_Baudrate" type ="int" value="230400" />
+    <!-- latency_timer :1 ~ 16, default:16 -->
+    <param name="USB_LatencyTime" type ="int" value="16" />
+
+    <!-- UDP addr  default 192.168.225.2 要求设置网卡地址的IP -->
+    <param name="UDP_Addr" type ="string" value="192.168.225.2" />
+    <!-- UDP port  default 12300 -->
+    <param name="UDP_Port" type ="int" value="12300" />
+
+    <!-- IMU BDDB0A协议类型 0：V1.0  1：V2.0 072 -->
+    <param name="ProtocolType" type ="int" value="0" />
+    <!-- AG041协议：陀螺量程 -->
+    <param name="Grange04" type ="double" value="250.0" />
+    <!-- AG041协议：加表量程 -->
+    <param name="Arange04" type ="double" value="4.0" />
+    <!-- 570D协议：陀螺量程 -->
+    <param name="Grange0B" type ="double" value="250.0" />
+    <!-- 570D协议：加表量程 -->
+    <param name="Arange0B" type ="double" value="4.0" />
+    <!-- 设置日志文件路径和文件名 -->
+    <param name="LogInfo" type ="string" value="./debug.log" />
+    <!-- 设置日志打印等级：DEBUG:0 (save imu rawdata),INFO:1,WARNING:2,ERROR:3,FATAL:4 -->
+    <param name="LogLevel" type ="int" value="1" />   
+     
+  </node>
+
+</launch>

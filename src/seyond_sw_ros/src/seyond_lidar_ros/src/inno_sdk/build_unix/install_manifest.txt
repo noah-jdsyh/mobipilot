@@ -1,0 +1,2 @@
+/home/cabr/3.103.10-public/ros-seyond/seyond_sw_ros/src/seyond_lidar_ros/src/inno_sdk/apps/example/demo
+/home/cabr/3.103.10-public/ros-seyond/seyond_sw_ros/src/seyond_lidar_ros/src/inno_sdk/apps/example/sphere2xyz

@@ -1,0 +1,296 @@
+================================================================================
+          VB300 自动驾驶全系统启动与底盘CAN功能测试手册
+================================================================================
+  版本: V2.0 | 日期: 2026-07-20
+  底盘: 建机院 VB300 | CAN 协议: 智能驾驶协议20250527
+  转向传动比: 方向盘780° / 前轮32° = 24.375
+
+================================================================================
+  第一部分: 设备连接总览
+================================================================================
+
+┌───────────── 笔记本 ───────────────┐
+│                                   │
+│ USB1 ← FTDI线 ← INS5715DAA RS232-1 │  230400bps BD DB 0B
+│ USB2 ← PCAN-USB ← CAN4-H/CAN4-L   │  500kbps CAN 收发
+│ RJ45 ← 千兆交换机                  │  192.168.1.50/24
+│          ├── LiDAR #1 192.168.1.33 │
+│          └── LiDAR #2 192.168.1.34 │
+└───────────────────────────────────┘
+
+底盘供电: 12V DC → INS5715DAA + 千兆交换机 + 2×LiDAR
+
+
+================================================================================
+  第二部分: CAN 接口初始化 (每次开机执行一次)
+================================================================================
+
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 500000
+sudo ip link set up can0
+candump can0 | head -3                     # 确认有 EPS/MCU/EHB 帧
+
+
+================================================================================
+  第三部分: 组合导航 (INS5715DAA) 启动
+================================================================================
+
+1. 确认串口:
+   ls /dev/ttyUSB*
+
+2. 验证数据:
+   sudo cat /dev/ttyUSB0 | xxd | grep "bddb 0b" | head -1
+    # 应看到 bddb 0b 帧头
+
+3. 启动 ROS2 驱动:
+   pkill -9 -f ins_node 2>/dev/null
+   source /opt/ros/humble/setup.bash
+   source ~/vb300_ws/install/setup.bash
+   ~/vb300_ws/install/vb300_nodes/bin/ins_node \
+     --ros-args -p port_data:=/dev/ttyUSB0 -p baud:=230400
+
+4. 验证数据:
+   ros2 topic list | grep ins           # 应看到 /ins/pose /ins/odom /ins/fix /ins/status
+   ros2 topic echo /ins/pose --once     # 露天有 GNSS 时输出 UTM 坐标
+
+   ⚠ 室内无 GNSS → pos_valid=False → 不发 /ins/pose, 日志显示 UNINIT
+     露天有卫星 → 自动开始发布
+    
+
+================================================================================
+  第四部分: 激光雷达 (Mid-360) 启动
+================================================================================
+
+1. 配网口:
+   sudo ip addr add 192.168.1.50/24 dev enp52s0 2>/dev/null
+
+2. 验证连通:
+   ping 192.168.1.33 -c 1
+   ping 192.168.1.34 -c 1
+
+3. SDK 验证 (看原始点云):
+   /home/cabr/Livox-SDK2/build/samples/livox_lidar_quick_start/livox_lidar_quick_start \
+     /tmp/mid360_dual.json
+
+4. ROS2 驱动 (需要先解决 livox_ros_driver2 配置):
+   source ~/vb300_ws/install/setup.bash
+   ros2 launch livox_ros_driver2 rviz_MID360_launch.py
+   (或待 UDP bridge 完善后使用)
+
+
+================================================================================
+  第五部分: 底盘 CAN 功能完整测试
+================================================================================
+
+  前提:
+    底盘上电, 千斤顶架起四轮离地, 遥控器在手, CAN已配置
+    若用 ROS2 方式: can_node 必须运行
+      source ~/vb300_ws/install/setup.bash
+      ~/vb300_ws/install/vb300_nodes/bin/can_node
+
+  CAN ID 速查:
+    ACU_General (0xCF008FB)       → 智驾发底盘 (控制)
+    EPS_ACU     (0x18FB62F7)      ← EPS 反馈 (方向盘角度/故障)
+    MCU_1_General (0x18F900EF)    ← 车速/油门 反馈
+    MCU_2_General (0x18F560EF)    ← 档位/电机转速/就绪 反馈
+    EHB_ACU     (0x18F40010)      ← 制动压力/故障 反馈
+    EPB_ACU     (0x18F53C0C)      ← 电子驻车状态 反馈
+    BMS_ACU     (0x18FF50E6)      ← 电池 SOC/电压/电流/温度 反馈
+
+  ───────────────────  S1. 自动驾驶模式开关  ───────────────────
+  ROS2:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 0.0}"
+  预期: 仪表指示灯变化/继电器声
+
+  ROS2关闭:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: false, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 0.0}"
+
+  ───────────────────  S2. EPB 驻车释放/拉紧  ───────────────────
+  释放:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 0.0}"
+  拉紧:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: true, epb_release: false, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 0.0}"
+  验证: ros2 topic echo /state | grep epb_applied
+
+  ───────────────────  S3. 档位测试  ───────────────────
+  N档:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 0.0}"
+  D档:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 1, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 0.0}"
+  R档:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 2, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 0.0}"
+  验证: ros2 topic echo /state | grep gear
+
+  ───────────────────  S4. 油门测试 (D档 + 多梯度)  ───────────────────
+  5%:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 1, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 5.0, brake_pct: 0.0}"
+  10%:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 1, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 10.0, brake_pct: 0.0}"
+  30%:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 1, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 30.0, brake_pct: 0.0}"
+  50%:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 1, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 50.0, brake_pct: 0.0}"
+  油门归零:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 1, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 0.0}"
+
+  ───────────────────  S5. 制动测试 (D档 + 多压力)  ───────────────────
+  10%:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 1, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 10.0}"
+  30%:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 1, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 30.0}"
+  100% 急刹:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 1, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 100.0}"
+  验证: ros2 topic echo /state | grep brake
+
+  ───────────────────  S6. 转向测试 (N档 + 多角度, 传动比24.375)  ───────────────────
+  居中:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 0.0}"
+  左转 5°:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: true, epb_release: true, steer_angle: 0.087, throttle_pct: 0.0, brake_pct: 0.0}"
+  左转 15°:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: true, epb_release: true, steer_angle: 0.262, throttle_pct: 0.0, brake_pct: 0.0}"
+  左转 30°:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: true, epb_release: true, steer_angle: 0.524, throttle_pct: 0.0, brake_pct: 0.0}"
+  右转 15°:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: true, epb_release: true, steer_angle: -0.262, throttle_pct: 0.0, brake_pct: 0.0}"
+  右转 30°:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: true, epb_release: true, steer_angle: -0.524, throttle_pct: 0.0, brake_pct: 0.0}"
+  验证: ros2 topic echo /state | grep steer_angle
+
+  ───────────────────  S7. 倒档加速减速制动  ───────────────────
+  R档 10%油门:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 2, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 10.0, brake_pct: 0.0}"
+  R档 30%油门:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 2, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 30.0, brake_pct: 0.0}"
+  R档 减速(归零):
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 2, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 0.0}"
+  R档 制动30%:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 2, auto_enable: true, epb_release: true, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 30.0}"
+
+  ───────────────────  S8. 转向灯/喇叭/灯光控制  ───────────────────
+  (需先扩 can_node 的 ChassisCmd 支持, 已预留字段 left_signal/right_signal/horn 等)
+  左转向灯开/关, 右转向灯开/关, 喇叭开/关, 危险警告灯, 制动灯, 倒车灯
+
+  ───────────────────  S9. 组合测试 (模拟循迹)  ───────────────────
+  D档 + 左转10° + 油门15%:
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 1, auto_enable: true, epb_release: true, steer_angle: 0.175, throttle_pct: 15.0, brake_pct: 0.0}"
+
+  ───────────────────  S10. 退出自动驾驶 + 急停  ───────────────────
+    ros2 topic pub -1 /cmd vb300_interfaces/msg/ChassisCmd \
+      "{gear: 0, auto_enable: false, epb_release: false, steer_angle: 0.0, throttle_pct: 0.0, brake_pct: 100.0}"
+
+
+================================================================================
+  第六部分: 监控底盘状态
+================================================================================
+
+  一次性查看:
+    source ~/vb300_ws/install/setup.bash
+    ~/vb300_ws/install/vb300_nodes/bin/send_cmd --status
+
+  实时刷新:
+    ~/vb300_ws/install/vb300_nodes/bin/send_cmd --watch
+
+  只订阅 feedback (不控制):
+    source ~/vb300_ws/install/setup.bash
+    ros2 topic echo /state
+
+
+================================================================================
+  第七部分: 键盘遥控 (测试用)
+================================================================================
+
+  pkill -9 -f keyboard 2>/dev/null
+  source /opt/ros/humble/setup.bash
+  source ~/vb300_ws/install/setup.bash
+  ~/vb300_ws/install/vb300_nodes/bin/keyboard_teleop
+
+  按键:
+    W/S     油门 +/- 5%
+    A/D     左转/右转
+    空格     急刹 100%
+    1/2/0   D/R/N 档
+    P        EPB 释放/拉紧
+    E        自动驾驶开/关
+    Q        退出(自动停车+EPB)
+
+  ⚠ 使用前确认: 千斤顶架牢, 遥控器在手, 车内无人
+
+
+================================================================================
+  第八部分: 验收记录表
+================================================================================
+
+┌──────┬──────────────────┬────────────────────┬────────┬────────┐
+│ 序号 │ 测试项            │ 关键参数           │ 预期   │ 实际   │
+├──────┼──────────────────┼────────────────────┼────────┼────────┤
+│ 1    │ 自动驾驶开        │ auto_enable=true   │ 灯/继电器         │
+│ 2    │ 自动驾驶关        │ auto_enable=false  │ 模式退出           │
+├──────┼──────────────────┼────────────────────┼────────┼────────┤
+│ 3    │ EPB 释放          │ epb_release=true   │ 后轮可手转         │
+│ 4    │ EPB 拉紧          │ epb_release=false  │ 后轮锁死           │
+├──────┼──────────────────┼────────────────────┼────────┼────────┤
+│ 5    │ D 档              │ gear=1             │ 后轮正转           │
+│ 6    │ R 档              │ gear=2             │ 后轮反转           │
+│ 7    │ N 档              │ gear=0             │ 后轮空转           │
+├──────┼──────────────────┼────────────────────┼────────┼────────┤
+│ 8    │ 油门 5%           │ throttle_pct=5     │ 低速转             │
+│ 9    │ 油门 30%          │ throttle_pct=30    │ 中速转             │
+│ 10   │ 油门 50%          │ throttle_pct=50    │ 高速转             │
+│ 11   │ 油门归零          │ throttle_pct=0     │ 惯性停止           │
+├──────┼──────────────────┼────────────────────┼────────┼────────┤
+│ 12   │ 制动 10%          │ brake_pct=10       │ 轻微减速           │
+│ 13   │ 制动 30%          │ brake_pct=30       │ 明显减速           │
+│ 14   │ 制动 100%         │ brake_pct=100      │ 抱死刹停           │
+├──────┼──────────────────┼────────────────────┼────────┼────────┤
+│ 15   │ 居中              │ steer_angle=0.0    │ 前轮回正           │
+│ 16   │ 左转 5°           │ steer_angle=0.087  │ 前轮微左           │
+│ 17   │ 左转 30°          │ steer_angle=0.524  │ 前轮打满(左)       │
+│ 18   │ 右转 30°          │ steer_angle=-0.524 │ 前轮打满(右)       │
+├──────┼──────────────────┼────────────────────┼────────┼────────┤
+│ 19   │ R档+油门+制动     │ gear=2+thr+brake   │ 倒车刹             │
+│ 20   │ 转+油组合          │ steer=±0.175+thr   │ 转着走             │
+│ 21   │ 紧急退出           │ auto=false+刹车100 │ 立即停车+EPB       │
+└──────┴──────────────────┴────────────────────┴────────┴────────┘
+
+
+================================================================================
+  关键参数速查
+================================================================================
+
+  传动比:    24.375 (方向盘780° / 前轮32°)
+  CAN 波特率: 500kbps
+  最大前轮转角: ±0.5585 rad (±32°)
+  最高车速:   1.39 m/s (5km/h)
+  轴距:       1.25 m
+  ACU_General: 0xCF008FB, DLC=8, 扩展帧, checksum=sum(byte0..byte6)&0xFF
+  笔记本 IP:  192.168.1.50/24
+  LiDAR #1:   192.168.1.33
+  LiDAR #2:   192.168.1.34
+  INS 串口:   /dev/ttyUSB0, 230400bps, BD DB 0B 二进制协议
